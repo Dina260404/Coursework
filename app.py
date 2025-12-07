@@ -1,327 +1,239 @@
 import dash
-from dash import dcc, html, Input, Output, callback, dash_table
-import dash_bootstrap_components as dbc
-import pandas as pd
+from dash import dcc, html, Input, Output, dash_table
 import plotly.express as px
-from sklearn.cluster import KMeans
-from sklearn.linear_model import LinearRegression
+import plotly.graph_objects as go
+import pandas as pd
 
 # ======================
-# ЗАГРУЗКА И ОБРАБОТКА ДАННЫХ
+# ЗАГРУЗКА ДАННЫХ
 # ======================
-df = pd.read_csv('GlobalTemperatures_Optimized_Half2_fixed.csv', parse_dates=["Date"])
-df["Year"] = df["Date"].dt.year
-df["Month"] = df["Date"].dt.month
+df = pd.read_csv('GlobalTemperatures_Optimized_Half2_fixed.csv')
 
-# Обработка координат
-df["Latitude"] = df["Latitude"].str.replace("N", "").str.replace("S", "-").astype(float)
-df["Longitude"] = df["Longitude"].str.replace("E", "").str.replace("W", "-").astype(float)
+# Приведение числовых колонок к числу (только те, что есть)
+df['Год'] = pd.to_numeric(df['Год'], errors='coerce')
+df['СредняяТемпература'] = pd.to_numeric(df['СредняяТемпература'], errors='coerce')
 
-# Уникальные страны и города для фильтров
-countries = sorted(df["Country"].dropna().unique())
-cities = sorted(df["City"].dropna().unique())
-min_year = int(df["Year"].min())
-max_year = int(df["Year"].max())
+# Разделение по типам
+df_global = df[df['Тип'] == 'global_yearly'].copy()
+df_countries = df[df['Тип'] == 'country'].copy()
+df_monthly = df[df['Тип'] == 'global_monthly'].copy()
+df_hemi = df[df['Тип'] == 'hemisphere_yearly'].copy()
+
+# Уникальные страны (если есть)
+countries = ['All']
+if not df_countries.empty:
+    countries += sorted(df_countries['Страна'].dropna().unique().tolist())
+
+# Годы для слайдера
+all_years = []
+if not df_global.empty:
+    all_years.extend(df_global['Год'].dropna().astype(int).tolist())
+if not df_hemi.empty:
+    all_years.extend(df_hemi['Год'].dropna().astype(int).tolist())
+years = sorted(set(all_years)) if all_years else [1850, 2013]
 
 # ======================
-# ИНИЦИАЛИЗАЦИЯ ПРИЛОЖЕНИЯ
+# ИНИЦИАЛИЗАЦИЯ DASH
 # ======================
 app = dash.Dash(
     __name__,
     suppress_callback_exceptions=True,
-    external_stylesheets=[dbc.themes.BOOTSTRAP],
-    meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}]
+    external_stylesheets=["https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"]
 )
-server = app.server  # ОБЯЗАТЕЛЬНО для Render
-
-# ======================
-# НАВБАР
-# ======================
-navbar = dbc.NavbarSimple(
-    children=[
-        dbc.NavItem(dbc.NavLink("Raw Data", href="/", active="exact")),
-        dbc.NavItem(dbc.NavLink("Analysis Results", href="/analysis", active="exact")),
-    ],
-    brand="🌍 Environmental Impact Monitor",
-    brand_href="/",
-    color="primary",
-    dark=True,
-    fixed="top",
-)
+server = app.server  # ← ОБЯЗАТЕЛЬНО для Render
 
 # ======================
 # LAYOUT
 # ======================
 app.layout = html.Div([
     dcc.Location(id='url', refresh=False),
-    navbar,
-    html.Div(id='page-content', style={"marginTop": "60px", "padding": "20px"})
+    html.Div([
+        html.H1("🌍 Environmental Impact Monitor", className="text-center my-4"),
+        html.Div([
+            dcc.Link("📊 Raw Data Visualization", href="/", className="btn btn-outline-primary m-2"),
+            dcc.Link("🔍 Analysis Results", href="/analysis", className="btn btn-outline-success m-2")
+        ], className="text-center mb-4")
+    ]),
+    html.Div(id='page-content')
 ])
 
-# ======================
-# СТРАНИЦА 1: RAW DATA
-# ======================
-page_raw = html.Div([
-    html.H2("🌡️ Raw Data Visualization", className="mb-4"),
-
+# Страница 1: Визуализация данных
+raw_layout = html.Div([
+    html.H2("📊 Raw Data Visualization", className="text-center mb-4"),
+    
     # Фильтры
-    dbc.Row([
-        dbc.Col([
+    html.Div([
+        html.Div([
+            html.Label("Страна:", className="form-label"),
             dcc.Dropdown(
                 id='country-filter',
                 options=[{'label': c, 'value': c} for c in countries],
-                placeholder="Select Country",
-                multi=True
+                value='All',
+                className="form-control"
             )
-        ], md=3),
-        dbc.Col([
-            dcc.Dropdown(
-                id='city-filter',
-                options=[{'label': c, 'value': c} for c in cities],
-                placeholder="Select City",
-                multi=True
-            )
-        ], md=3),
-        dbc.Col([
+        ], className="col-md-4"),
+        html.Div([
+            html.Label("Годы:", className="form-label"),
             dcc.RangeSlider(
                 id='year-slider',
-                min=min_year,
-                max=max_year,
-                step=1,
-                value=[min_year, max_year],
-                marks={str(year): str(year) for year in range(min_year, max_year + 1, 20)},
-                tooltip={"placement": "bottom", "always_visible": True}
+                min=min(years),
+                max=max(years),
+                value=[min(years), max(years)],
+                marks={y: str(y) for y in range(min(years), max(years)+1, 20)},
+                className="mt-2"
             )
-        ], md=6),
-    ], className="mb-4"),
+        ], className="col-md-8")
+    ], className="row mb-4"),
 
-    # KPI карточки
-    html.Div(id='kpi-cards', className="mb-4"),
+    # KPI-карточки
+    html.Div(id='kpi-cards', className="row mb-4"),
 
     # Таблица
     html.Div([
         dash_table.DataTable(
             id='data-table',
-            columns=[{"name": i, "id": i} for i in df.columns],
+            columns=[
+                {"name": "Тип", "id": "Тип"},
+                {"name": "Год", "id": "Год"},
+                {"name": "Страна", "id": "Страна"},
+                {"name": "Полушарие", "id": "Полушарие"},
+                {"name": "Средняя температура", "id": "СредняяТемпература"}
+            ],
             page_size=10,
             sort_action='native',
             filter_action='native',
             style_table={'overflowX': 'auto'},
-            style_cell={'textAlign': 'left', 'padding': '5px', 'fontSize': 12},
+            style_cell={'textAlign': 'left', 'padding': '5px'}
         )
     ], className="mb-4"),
 
-    # Визуализации
-    dbc.Row([
-        dbc.Col(dcc.Graph(id='temp-hist'), md=6),
-        dbc.Col(dcc.Graph(id='temp-box'), md=6),
-    ], className="mb-4"),
+    # Графики
+    html.Div([
+        html.Div(dcc.Graph(id='hist-plot'), className="col-md-6"),
+        html.Div(dcc.Graph(id='box-plot'), className="col-md-6"),
+    ], className="row mb-4"),
 
-    dbc.Row([
-        dbc.Col(dcc.Graph(id='country-bar'), md=6),
-        dbc.Col(dcc.Graph(id='corr-heatmap'), md=6),
-    ], className="mb-4"),
+    html.Div(dcc.Graph(id='scatter-plot'), className="mb-4"),
+])
 
-    # Карта
-    dcc.Graph(id='map-plot')
+# Страница 2: Анализ
+analysis_layout = html.Div([
+    html.H2("🔍 Analysis Results", className="text-center mb-4"),
+    html.Div([
+        html.Div([
+            html.Label("Выбор модели:", className="form-label"),
+            dcc.RadioItems(
+                id='model-selector',
+                options=[
+                    {'label': 'Глобальный тренд', 'value': 'trend'},
+                    {'label': 'Сравнение полушарий', 'value': 'hemisphere'}
+                ],
+                value='trend',
+                labelStyle={'display': 'block'}
+            )
+        ], className="col-md-3"),
+        html.Div(id='metrics-cards', className="col-md-9")
+    ], className="row mb-4"),
+    html.Div(dcc.Graph(id='analysis-graph'), className="mb-4"),
+    html.Div(id='insights-text', className="alert alert-info")
 ])
 
 # ======================
-# СТРАНИЦА 2: ANALYSIS
+# CALLBACKS
 # ======================
-page_analysis = html.Div([
-    html.H2("🔍 Analysis Results & Insights", className="mb-4"),
 
-    # Фильтры
-    dbc.Row([
-        dbc.Col([
-            dcc.Dropdown(
-                id='analysis-country-filter',
-                options=[{'label': c, 'value': c} for c in countries],
-                placeholder="Select Country",
-                multi=True
-            )
-        ], md=3),
-        dbc.Col([
-            dcc.Dropdown(
-                id='analysis-city-filter',
-                options=[{'label': c, 'value': c} for c in cities],
-                placeholder="Select City",
-                multi=True
-            )
-        ], md=3),
-        dbc.Col([
-            dcc.RangeSlider(
-                id='analysis-year-slider',
-                min=min_year,
-                max=max_year,
-                step=1,
-                value=[min_year, max_year],
-                marks={str(year): str(year) for year in range(min_year, max_year + 1, 20)},
-                tooltip={"placement": "bottom", "always_visible": True}
-            )
-        ], md=6),
-    ], className="mb-4"),
-
-    # KPI
-    html.Div(id='analysis-kpi-cards', className="mb-4"),
-
-    # Тренд
-    dcc.Graph(id='temp-trend'),
-
-    # Кластеризация
-    dcc.Graph(id='cluster-map'),
-
-    # Инсайт
-    html.Div(id='dynamic-insight', className="mt-3 p-3 bg-light rounded")
-])
-
-# ======================
-# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ
-# ======================
-def filter_data(country, city, year_range):
-    dff = df.copy()
-    if country:
-        dff = dff[dff["Country"].isin(country)]
-    if city:
-        dff = dff[dff["City"].isin(city)]
-    dff = dff[(dff["Year"] >= year_range[0]) & (dff["Year"] <= year_range[1])]
-    return dff
-
-# ======================
-# CALLBACKS: RAW DATA
-# ======================
-@app.callback(
-    [Output('kpi-cards', 'children'),
-     Output('data-table', 'data'),
-     Output('temp-hist', 'figure'),
-     Output('temp-box', 'figure'),
-     Output('country-bar', 'figure'),
-     Output('corr-heatmap', 'figure'),
-     Output('map-plot', 'figure')],
-    [Input('country-filter', 'value'),
-     Input('city-filter', 'value'),
-     Input('year-slider', 'value')]
-)
-def update_raw(country, city, year_range):
-    dff = filter_data(country, city, year_range)
-
-    total = len(dff)
-    missing = dff.isnull().sum().sum()
-    mean_temp = dff["AverageTemperature"].mean()
-    std_temp = dff["AverageTemperature"].std()
-
-    kpi_cards = dbc.Row([
-        dbc.Col(dbc.Card([dbc.CardBody([html.H5("Total Records"), html.H4(f"{total:,}")])], color="light")),
-        dbc.Col(dbc.Card([dbc.CardBody([html.H5("Missing Values"), html.H4(f"{missing:,}")])], color="warning")),
-        dbc.Col(dbc.Card([dbc.CardBody([html.H5("Mean Temp (°C)"), html.H4(f"{mean_temp:.2f}")])], color="info")),
-        dbc.Col(dbc.Card([dbc.CardBody([html.H5("Std Dev"), html.H4(f"{std_temp:.2f}")])], color="secondary")),
-    ])
-
-    temp_hist = px.histogram(dff, x="AverageTemperature", nbins=30, title="🌡️ Temperature Distribution")
-    temp_box = px.box(dff, y="AverageTemperature", color="Country", title="🌡️ Temp by Country")
-    country_bar = px.histogram(dff, y="Country", title="📍 Records per Country")
-
-    corr_cols = ["AverageTemperature", "Year", "Latitude", "Longitude"]
-    corr_data = dff[corr_cols].corr()
-    corr_heatmap = px.imshow(corr_data, text_auto=True, title="🔗 Correlation Heatmap")
-
-    map_fig = px.scatter_mapbox(
-        dff,
-        lat="Latitude",
-        lon="Longitude",
-        color="AverageTemperature",
-        size="AverageTemperatureUncertainty",
-        hover_name="City",
-        hover_data=["Country", "Date", "AverageTemperature"],
-        zoom=1,
-        title="🌍 Global Temperature Observations",
-        mapbox_style="open-street-map"
-    )
-    map_fig.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0})
-
-    return (
-        kpi_cards,
-        dff.to_dict('records'),
-        temp_hist,
-        temp_box,
-        country_bar,
-        corr_heatmap,
-        map_fig
-    )
-
-# ======================
-# CALLBACKS: ANALYSIS
-# ======================
-@app.callback(
-    [Output('analysis-kpi-cards', 'children'),
-     Output('temp-trend', 'figure'),
-     Output('cluster-map', 'figure'),
-     Output('dynamic-insight', 'children')],
-    [Input('analysis-country-filter', 'value'),
-     Input('analysis-city-filter', 'value'),
-     Input('analysis-year-slider', 'value')]
-)
-def update_analysis(country, city, year_range):
-    dff = filter_data(country, city, year_range)
-
-    yearly = dff.groupby("Year")["AverageTemperature"].mean().reset_index()
-    trend_fig = px.line(yearly, x="Year", y="AverageTemperature", title="📈 Global Avg Temperature Trend")
-    if len(yearly) > 5:
-        trend_fig.add_scatter(
-            x=yearly["Year"],
-            y=yearly["AverageTemperature"].rolling(window=5).mean(),
-            mode='lines',
-            name='5-Year Rolling Avg',
-            line=dict(dash='dash')
-        )
-
-    if len(dff) < 3:
-        cluster_fig = px.scatter_mapbox(title="⚠️ Not enough data for clustering")
-        cluster_fig.update_layout(mapbox_style="open-street-map")
-        insight = "Insufficient data to compute clusters."
-    else:
-        kmeans = KMeans(n_clusters=3, n_init=10, random_state=42).fit(dff[["AverageTemperature", "Latitude"]])
-        dff["Cluster"] = kmeans.labels_
-        cluster_fig = px.scatter_mapbox(
-            dff,
-            lat="Latitude",
-            lon="Longitude",
-            color="Cluster",
-            hover_name="City",
-            hover_data=["AverageTemperature"],
-            title="📍 Temperature Clusters (K=3)",
-            mapbox_style="open-street-map"
-        )
-        cluster_means = dff.groupby("Cluster")["AverageTemperature"].mean()
-        max_cluster = cluster_means.idxmax()
-        min_cluster = cluster_means.idxmin()
-        diff = cluster_means[max_cluster] - cluster_means[min_cluster]
-        insight = f"In this selection, Cluster {max_cluster} is on average {diff:.1f}°C warmer than Cluster {min_cluster}."
-
-    r2 = None
-    if len(yearly) > 1:
-        X = yearly[["Year"]]
-        y = yearly["AverageTemperature"]
-        model = LinearRegression().fit(X, y)
-        r2 = model.score(X, y)
-
-    analysis_kpi = dbc.Row([
-        dbc.Col(dbc.Card([dbc.CardBody([html.H5("Trend R²"), html.H4(f"{r2:.3f}" if r2 else "–")])], color="success")),
-        dbc.Col(dbc.Card([dbc.CardBody([html.H5("Clusters"), html.H4("3")])], color="primary")),
-        dbc.Col(dbc.Card([dbc.CardBody([html.H5("Cities"), html.H4(f"{dff['City'].nunique()}")])], color="info")),
-    ])
-
-    return analysis_kpi, trend_fig, cluster_fig, insight
-
-# ======================
-# НАВИГАЦИЯ
-# ======================
 @app.callback(Output('page-content', 'children'), Input('url', 'pathname'))
 def display_page(pathname):
-    if pathname == "/analysis":
-        return page_analysis
-    return page_raw
+    if pathname == '/analysis':
+        return analysis_layout
+    return raw_layout
+
+@app.callback(
+    Output('data-table', 'data'),
+    Output('kpi-cards', 'children'),
+    Output('hist-plot', 'figure'),
+    Output('box-plot', 'figure'),
+    Output('scatter-plot', 'figure'),
+    Input('country-filter', 'value'),
+    Input('year-slider', 'value')
+)
+def update_raw_data(country, year_range):
+    # Объединяем данные
+    dff = pd.concat([df_global, df_countries, df_hemi], ignore_index=True)
+    dff = dff[(dff['Год'] >= year_range[0]) & (dff['Год'] <= year_range[1])]
+    if country != 'All':
+        dff = dff[dff['Страна'] == country]
+    dff = dff.dropna(subset=['СредняяТемпература'])
+
+    # KPI
+    kpi_cards = [
+        html.Div(html.Div([
+            html.H5("Записей", className="card-title"),
+            html.H4(f"{len(dff):,}", className="card-text")
+        ], className="card-body"), className="col-md-3")
+    ]
+    if len(dff) > 0:
+        kpi_cards.append(
+            html.Div(html.Div([
+                html.H5("Ср. температура", className="card-title"),
+                html.H4(f"{dff['СредняяТемпература'].mean():.2f}°C", className="card-text")
+            ], className="card-body"), className="col-md-3")
+        )
+
+    # Таблица
+    table_cols = ['Тип', 'Год', 'Страна', 'Полушарие', 'СредняяТемпература']
+    table_data = dff[table_cols].dropna(how='all').fillna('').head(50).to_dict('records')
+
+    # Гистограмма
+    hist = px.histogram(dff, x='СредняяТемпература', nbins=20, title="Распределение температур")
+
+    # Box-plot
+    box = px.box(dff, y='СредняяТемпература', title="Разброс температур")
+
+    # Scatter
+    scatter = px.scatter(
+        dff, x='Год', y='СредняяТемпература',
+        color='Тип', hover_data=['Страна', 'Полушарие'],
+        title="Температура по годам"
+    )
+
+    return table_data, kpi_cards, hist, box, scatter
+
+@app.callback(
+    Output('analysis-graph', 'figure'),
+    Output('metrics-cards', 'children'),
+    Output('insights-text', 'children'),
+    Input('model-selector', 'value')
+)
+def update_analysis(model):
+    if model == 'hemisphere' and not df_hemi.empty:
+        fig = px.line(
+            df_hemi,
+            x='Год',
+            y='СредняяТемпература',
+            color='Полушарие',
+            title="Сравнение температур: Северное vs Южное полушарие"
+        )
+        insights = "Северное полушарие нагревается быстрее из-за большей концентрации суши и промышленности."
+        metrics = []
+    else:
+        fig = px.line(
+            df_global,
+            x='Год',
+            y='СредняяТемпература',
+            title="Глобальный тренд средней температуры (1850–2013)"
+        )
+        if len(df_global) > 5:
+            fig.add_scatter(
+                x=df_global['Год'],
+                y=df_global['СредняяТемпература'].rolling(window=10, min_periods=1).mean(),
+                mode='lines',
+                name='10-летнее скользящее среднее'
+            )
+        insights = "Средняя глобальная температура выросла более чем на 1°C с середины XIX века."
+        metrics = []
+
+    return fig, metrics, insights
 
 # ======================
 # ЗАПУСК
