@@ -7,7 +7,7 @@ import pandas as pd
 # ======================
 # ЗАГРУЗКА ДАННЫХ
 # ======================
-df = pd.read_csv('light_environmental_data.csv')
+df = pd.read_csv('GlobalTemperatures_Optimized_Half2.csv')
 
 # Приведение числовых колонок к числу (только те, что есть)
 df['Год'] = pd.to_numeric(df['Год'], errors='coerce')
