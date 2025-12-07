@@ -4,7 +4,7 @@ import dash_bootstrap_components as dbc
 import pandas as pd
 
 # ---------- Загрузка и обработка данных ----------
-df = pd.read_csv("data/GlobalTemperatures_Optimized_Half2_fixed.csv", parse_dates=["Date"])
+df = pd.read_csv("GlobalTemperatures_Optimized_Half2_fixed.csv", parse_dates=["Date"])
 df["Year"] = df["Date"].dt.year
 df["Month"] = df["Date"].dt.month
 
