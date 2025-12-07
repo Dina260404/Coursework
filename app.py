@@ -1,10 +1,15 @@
 import dash
-from dash import dcc, html, Input, Output, callback
+from dash import dcc, html, Input, Output, callback, dash_table
 import dash_bootstrap_components as dbc
 import pandas as pd
+import plotly.express as px
+from sklearn.cluster import KMeans
+from sklearn.linear_model import LinearRegression
 
-# ---------- Загрузка и обработка данных ----------
-df = pd.read_csv("GlobalTemperatures_Optimized_Half2_fixed.csv", parse_dates=["Date"])
+# ======================
+# ЗАГРУЗКА И ОБРАБОТКА ДАННЫХ
+# ======================
+df = pd.read_csv('GlobalTemperatures_Optimized_Half2_fixed.csv', parse_dates=["Date"])
 df["Year"] = df["Date"].dt.year
 df["Month"] = df["Date"].dt.month
 
@@ -15,20 +20,23 @@ df["Longitude"] = df["Longitude"].str.replace("E", "").str.replace("W", "-").ast
 # Уникальные страны и города для фильтров
 countries = sorted(df["Country"].dropna().unique())
 cities = sorted(df["City"].dropna().unique())
-min_year = df["Year"].min()
-max_year = df["Year"].max()
+min_year = int(df["Year"].min())
+max_year = int(df["Year"].max())
 
-# ---------- Инициализация приложения ----------
+# ======================
+# ИНИЦИАЛИЗАЦИЯ ПРИЛОЖЕНИЯ
+# ======================
 app = dash.Dash(
     __name__,
     suppress_callback_exceptions=True,
     external_stylesheets=[dbc.themes.BOOTSTRAP],
     meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}]
 )
+server = app.server  # ОБЯЗАТЕЛЬНО для Render
 
-server = app.server  # для Render
-
-# ---------- Макет навбара ----------
+# ======================
+# НАВБАР
+# ======================
 navbar = dbc.NavbarSimple(
     children=[
         dbc.NavItem(dbc.NavLink("Raw Data", href="/", active="exact")),
@@ -41,14 +49,18 @@ navbar = dbc.NavbarSimple(
     fixed="top",
 )
 
-# ---------- Контент страниц ----------
+# ======================
+# LAYOUT
+# ======================
 app.layout = html.Div([
     dcc.Location(id='url', refresh=False),
     navbar,
     html.Div(id='page-content', style={"marginTop": "60px", "padding": "20px"})
 ])
 
-# ---------- Страница 1: Raw Data Visualization ----------
+# ======================
+# СТРАНИЦА 1: RAW DATA
+# ======================
 page_raw = html.Div([
     html.H2("🌡️ Raw Data Visualization", className="mb-4"),
 
@@ -77,7 +89,7 @@ page_raw = html.Div([
                 max=max_year,
                 step=1,
                 value=[min_year, max_year],
-                marks={str(year): str(year) for year in range(min_year, max_year+1, 20)},
+                marks={str(year): str(year) for year in range(min_year, max_year + 1, 20)},
                 tooltip={"placement": "bottom", "always_visible": True}
             )
         ], md=6),
@@ -88,7 +100,7 @@ page_raw = html.Div([
 
     # Таблица
     html.Div([
-        dash.dash_table.DataTable(
+        dash_table.DataTable(
             id='data-table',
             columns=[{"name": i, "id": i} for i in df.columns],
             page_size=10,
@@ -114,11 +126,13 @@ page_raw = html.Div([
     dcc.Graph(id='map-plot')
 ])
 
-# ---------- Страница 2: Analysis Results ----------
+# ======================
+# СТРАНИЦА 2: ANALYSIS
+# ======================
 page_analysis = html.Div([
     html.H2("🔍 Analysis Results & Insights", className="mb-4"),
 
-    # Фильтры (повторяем те же)
+    # Фильтры
     dbc.Row([
         dbc.Col([
             dcc.Dropdown(
@@ -143,26 +157,28 @@ page_analysis = html.Div([
                 max=max_year,
                 step=1,
                 value=[min_year, max_year],
-                marks={str(year): str(year) for year in range(min_year, max_year+1, 20)},
+                marks={str(year): str(year) for year in range(min_year, max_year + 1, 20)},
                 tooltip={"placement": "bottom", "always_visible": True}
             )
         ], md=6),
     ], className="mb-4"),
 
-    # KPI Analysis
+    # KPI
     html.Div(id='analysis-kpi-cards', className="mb-4"),
 
     # Тренд
     dcc.Graph(id='temp-trend'),
 
-    # Кластеризация (упрощённая: по широте и температуре)
+    # Кластеризация
     dcc.Graph(id='cluster-map'),
 
-    # Динамический insight
+    # Инсайт
     html.Div(id='dynamic-insight', className="mt-3 p-3 bg-light rounded")
 ])
 
-# ---------- Коллбэки для фильтрации ----------
+# ======================
+# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ
+# ======================
 def filter_data(country, city, year_range):
     dff = df.copy()
     if country:
@@ -172,7 +188,9 @@ def filter_data(country, city, year_range):
     dff = dff[(dff["Year"] >= year_range[0]) & (dff["Year"] <= year_range[1])]
     return dff
 
-# ---------- Raw Data Callbacks ----------
+# ======================
+# CALLBACKS: RAW DATA
+# ======================
 @app.callback(
     [Output('kpi-cards', 'children'),
      Output('data-table', 'data'),
@@ -188,7 +206,6 @@ def filter_data(country, city, year_range):
 def update_raw(country, city, year_range):
     dff = filter_data(country, city, year_range)
 
-    # KPI
     total = len(dff)
     missing = dff.isnull().sum().sum()
     mean_temp = dff["AverageTemperature"].mean()
@@ -201,12 +218,10 @@ def update_raw(country, city, year_range):
         dbc.Col(dbc.Card([dbc.CardBody([html.H5("Std Dev"), html.H4(f"{std_temp:.2f}")])], color="secondary")),
     ])
 
-    # Визуализации
-    import plotly.express as px
     temp_hist = px.histogram(dff, x="AverageTemperature", nbins=30, title="🌡️ Temperature Distribution")
     temp_box = px.box(dff, y="AverageTemperature", color="Country", title="🌡️ Temp by Country")
     country_bar = px.histogram(dff, y="Country", title="📍 Records per Country")
-    
+
     corr_cols = ["AverageTemperature", "Year", "Latitude", "Longitude"]
     corr_data = dff[corr_cols].corr()
     corr_heatmap = px.imshow(corr_data, text_auto=True, title="🔗 Correlation Heatmap")
@@ -223,7 +238,7 @@ def update_raw(country, city, year_range):
         title="🌍 Global Temperature Observations",
         mapbox_style="open-street-map"
     )
-    map_fig.update_layout(margin={"r":0,"t":30,"l":0,"b":0})
+    map_fig.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0})
 
     return (
         kpi_cards,
@@ -235,7 +250,9 @@ def update_raw(country, city, year_range):
         map_fig
     )
 
-# ---------- Analysis Callbacks ----------
+# ======================
+# CALLBACKS: ANALYSIS
+# ======================
 @app.callback(
     [Output('analysis-kpi-cards', 'children'),
      Output('temp-trend', 'figure'),
@@ -248,21 +265,23 @@ def update_raw(country, city, year_range):
 def update_analysis(country, city, year_range):
     dff = filter_data(country, city, year_range)
 
-    # Тренд: средняя температура по годам
     yearly = dff.groupby("Year")["AverageTemperature"].mean().reset_index()
-    import plotly.express as px
     trend_fig = px.line(yearly, x="Year", y="AverageTemperature", title="📈 Global Avg Temperature Trend")
-    trend_fig.add_scatter(x=yearly["Year"], y=yearly["AverageTemperature"].rolling(window=5).mean(),
-                          mode='lines', name='5-Year Rolling Avg', line=dict(dash='dash'))
+    if len(yearly) > 5:
+        trend_fig.add_scatter(
+            x=yearly["Year"],
+            y=yearly["AverageTemperature"].rolling(window=5).mean(),
+            mode='lines',
+            name='5-Year Rolling Avg',
+            line=dict(dash='dash')
+        )
 
-    # Упрощённая кластеризация: 3 группы по температуре
-    from sklearn.cluster import KMeans
     if len(dff) < 3:
         cluster_fig = px.scatter_mapbox(title="⚠️ Not enough data for clustering")
         cluster_fig.update_layout(mapbox_style="open-street-map")
         insight = "Insufficient data to compute clusters."
     else:
-        kmeans = KMeans(n_clusters=3, n_init=10).fit(dff[["AverageTemperature", "Latitude"]])
+        kmeans = KMeans(n_clusters=3, n_init=10, random_state=42).fit(dff[["AverageTemperature", "Latitude"]])
         dff["Cluster"] = kmeans.labels_
         cluster_fig = px.scatter_mapbox(
             dff,
@@ -274,17 +293,14 @@ def update_analysis(country, city, year_range):
             title="📍 Temperature Clusters (K=3)",
             mapbox_style="open-street-map"
         )
-        # Инсайт
         cluster_means = dff.groupby("Cluster")["AverageTemperature"].mean()
         max_cluster = cluster_means.idxmax()
         min_cluster = cluster_means.idxmin()
         diff = cluster_means[max_cluster] - cluster_means[min_cluster]
         insight = f"In this selection, Cluster {max_cluster} is on average {diff:.1f}°C warmer than Cluster {min_cluster}."
 
-    # Метрики
     r2 = None
     if len(yearly) > 1:
-        from sklearn.linear_model import LinearRegression
         X = yearly[["Year"]]
         y = yearly["AverageTemperature"]
         model = LinearRegression().fit(X, y)
@@ -298,13 +314,17 @@ def update_analysis(country, city, year_range):
 
     return analysis_kpi, trend_fig, cluster_fig, insight
 
-# ---------- Навигация ----------
-@app.callback(Output('page-content', 'children'), [Input('url', 'pathname')])
+# ======================
+# НАВИГАЦИЯ
+# ======================
+@app.callback(Output('page-content', 'children'), Input('url', 'pathname'))
 def display_page(pathname):
     if pathname == "/analysis":
         return page_analysis
     return page_raw
 
-# ---------- Запуск ----------
+# ======================
+# ЗАПУСК
+# ======================
 if __name__ == '__main__':
     app.run_server(debug=True)
