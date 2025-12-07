@@ -1,193 +1,242 @@
-# app.py
-import streamlit as st
-import pandas as pd
+import dash
+from dash import dcc, html, Input, Output, dash_table
 import plotly.express as px
 import plotly.graph_objects as go
-import numpy as np
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
-import warnings
-warnings.filterwarnings('ignore')
+import pandas as pd
 
-# ========== ЗАГРУЗКА И ПОДГОТОВКА ДАННЫХ ==========
-@st.cache_data
-def load_data():
-    # Прочитаем и очистим данные (как сделано ранее)
-    with open('GlobalTemperatures_Optimized_Half2_fixed.csv', 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-    cleaned_lines = []
-    for line in lines:
-        if line.startswith('"') and line.endswith('"\n'):
-            line = line[1:-2] + '\n'
-        elif line.startswith('"') and line.endswith('"'):
-            line = line[1:-1]
-        cleaned_lines.append(line)
-    from io import StringIO
-    csv_str = ''.join(cleaned_lines)
-    df = pd.read_csv(StringIO(csv_str))
+# ======================
+# ЗАГРУЗКА ДАННЫХ
+# ======================
+df = pd.read_csv('GlobalTemperatures_Optimized_Half2_fixed.csv')
+
+# Приведение числовых колонок к числу (только те, что есть)
+df['Год'] = pd.to_numeric(df['Год'], errors='coerce')
+df['СредняяТемпература'] = pd.to_numeric(df['СредняяТемпература'], errors='coerce')
+
+# Разделение по типам
+df_global = df[df['Тип'] == 'global_yearly'].copy()
+df_countries = df[df['Тип'] == 'country'].copy()
+df_monthly = df[df['Тип'] == 'global_monthly'].copy()
+df_hemi = df[df['Тип'] == 'hemisphere_yearly'].copy()
+
+# Уникальные страны (если есть)
+countries = ['All']
+if not df_countries.empty:
+    countries += sorted(df_countries['Страна'].dropna().unique().tolist())
+
+# Годы для слайдера
+all_years = []
+if not df_global.empty:
+    all_years.extend(df_global['Год'].dropna().astype(int).tolist())
+if not df_hemi.empty:
+    all_years.extend(df_hemi['Год'].dropna().astype(int).tolist())
+years = sorted(set(all_years)) if all_years else [1850, 2013]
+
+# ======================
+# ИНИЦИАЛИЗАЦИЯ DASH
+# ======================
+app = dash.Dash(
+    __name__,
+    suppress_callback_exceptions=True,
+    external_stylesheets=["https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"]
+)
+server = app.server  # ← ОБЯЗАТЕЛЬНО для Render
+
+# ======================
+# LAYOUT
+# ======================
+app.layout = html.Div([
+    dcc.Location(id='url', refresh=False),
+    html.Div([
+        html.H1("🌍 Environmental Impact Monitor", className="text-center my-4"),
+        html.Div([
+            dcc.Link("📊 Raw Data Visualization", href="/", className="btn btn-outline-primary m-2"),
+            dcc.Link("🔍 Analysis Results", href="/analysis", className="btn btn-outline-success m-2")
+        ], className="text-center mb-4")
+    ]),
+    html.Div(id='page-content')
+])
+
+# Страница 1: Визуализация данных
+raw_layout = html.Div([
+    html.H2("📊 Raw Data Visualization", className="text-center mb-4"),
     
-    df['Date'] = pd.to_datetime(df['Date'])
-    
-    def parse_latlon(val):
-        if 'N' in val: return float(val.replace('N', ''))
-        elif 'S' in val: return -float(val.replace('S', ''))
-        elif 'E' in val: return float(val.replace('E', ''))
-        elif 'W' in val: return -float(val.replace('W', ''))
-        else: return float(val)
-    
-    df['Latitude'] = df['Latitude'].apply(parse_latlon)
-    df['Longitude'] = df['Longitude'].apply(parse_latlon)
-    df['Year'] = df['Date'].dt.year
-    df['Month'] = df['Date'].dt.month
-    return df
+    # Фильтры
+    html.Div([
+        html.Div([
+            html.Label("Страна:", className="form-label"),
+            dcc.Dropdown(
+                id='country-filter',
+                options=[{'label': c, 'value': c} for c in countries],
+                value='All',
+                className="form-control"
+            )
+        ], className="col-md-4"),
+        html.Div([
+            html.Label("Годы:", className="form-label"),
+            dcc.RangeSlider(
+                id='year-slider',
+                min=min(years),
+                max=max(years),
+                value=[min(years), max(years)],
+                marks={y: str(y) for y in range(min(years), max(years)+1, 20)},
+                className="mt-2"
+            )
+        ], className="col-md-8")
+    ], className="row mb-4"),
 
-df = load_data()
+    # KPI-карточки
+    html.Div(id='kpi-cards', className="row mb-4"),
 
-# ========== ЗАГОЛОВОК ==========
-st.set_page_config(layout="wide", page_title="🌍 Environmental Impact Monitor")
-st.title("🌍 Environmental Impact Monitor: Global City Temperatures")
-
-# ========== НАВИГАЦИЯ ==========
-page = st.sidebar.radio("🧭 Navigation", ["Raw Data Visualization", "Analysis Results"])
-
-# ========== СТРАНИЦА 1: RAW DATA ==========
-if page == "Raw Data Visualization":
-    st.header("📊 Raw Data Overview")
-
-    # --- KPI ---
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Records", len(df))
-    col2.metric("Cities", df['City'].nunique())
-    col3.metric("Countries", df['Country'].nunique())
-    col4.metric("Years Covered", f"{df['Year'].min()} – {df['Year'].max()}")
-
-    # --- ФИЛЬТРЫ ---
-    st.sidebar.subheader("🔍 Filters")
-    countries = st.sidebar.multiselect("Select Countries", options=sorted(df['Country'].unique()), default=[])
-    years = st.sidebar.slider("Select Year Range", int(df['Year'].min()), int(df['Year'].max()), (1900, 2020))
-    
-    # Применяем фильтры
-    filtered_df = df.copy()
-    if countries:
-        filtered_df = filtered_df[filtered_df['Country'].isin(countries)]
-    filtered_df = filtered_df[(filtered_df['Year'] >= years[0]) & (filtered_df['Year'] <= years[1])]
-
-    # --- ТАБЛИЦА ---
-    st.subheader("📋 Sample Data (with sorting/search via built-in UI)")
-    st.dataframe(filtered_df[['Date', 'City', 'Country', 'AverageTemperature', 'AverageTemperatureUncertainty']].head(20), use_container_width=True)
-
-    # --- Распределения ---
-    st.subheader("📈 Feature Distributions")
-    col1, col2 = st.columns(2)
-    with col1:
-        fig_temp = px.histogram(filtered_df, x='AverageTemperature', nbins=50, title="Temperature Distribution")
-        st.plotly_chart(fig_temp, use_container_width=True)
-    with col2:
-        top_countries = filtered_df['Country'].value_counts().head(10)
-        fig_country = px.bar(x=top_countries.index, y=top_countries.values, title="Top 10 Countries by Records")
-        fig_country.update_layout(xaxis_title="Country", yaxis_title="Count")
-        st.plotly_chart(fig_country, use_container_width=True)
-
-    # --- Корреляция ---
-    st.subheader("🌡️ Correlation Heatmap")
-    numeric_cols = ['AverageTemperature', 'AverageTemperatureUncertainty', 'Latitude', 'Longitude', 'Year']
-    corr = filtered_df[numeric_cols].corr()
-    fig_corr = px.imshow(corr, text_auto=True, color_continuous_scale='RdBu_r', title="Feature Correlation")
-    st.plotly_chart(fig_corr, use_container_width=True)
-
-    # --- Scatter & Pie ---
-    st.subheader("🔍 Additional Visualizations")
-    col1, col2 = st.columns(2)
-    with col1:
-        fig_scatter = px.scatter(filtered_df, x='Longitude', y='Latitude', color='AverageTemperature',
-                                 hover_data=['City', 'Country', 'Year'], title="Temperature by Location")
-        st.plotly_chart(fig_scatter, use_container_width=True)
-    with col2:
-        pie_data = filtered_df['Country'].value_counts().head(6)
-        fig_pie = px.pie(values=pie_data.values, names=pie_data.index, title="Country Share (Top 6)")
-        st.plotly_chart(fig_pie, use_container_width=True)
-
-
-# ========== СТРАНИЦА 2: ANALYSIS ==========
-elif page == "Analysis Results":
-    st.header("🔬 Temperature Trend & Clustering Analysis")
-
-    # --- ФИЛЬТРЫ ---
-    st.sidebar.subheader("🔍 Analysis Filters")
-    countries = st.sidebar.multiselect("Countries", sorted(df['Country'].unique()), default=[])
-    years = st.sidebar.slider("Year Range", int(df['Year'].min()), int(df['Year'].max()), (1950, 2020))
-    
-    filtered_df = df.copy()
-    if countries:
-        filtered_df = filtered_df[filtered_df['Country'].isin(countries)]
-    filtered_df = filtered_df[(filtered_df['Year'] >= years[0]) & (filtered_df['Year'] <= years[1])]
-
-    # --- ВРЕМЕННОЙ РЯД (средняя температура по годам) ---
-    st.subheader("📈 Global Temperature Trend")
-    yearly = filtered_df.groupby('Year')['AverageTemperature'].mean().reset_index()
-    
-    # Линейная регрессия для тренда
-    X = yearly[['Year']].values
-    y = yearly['AverageTemperature'].values
-    model = LinearRegression().fit(X, y)
-    y_pred = model.predict(X)
-    r2 = r2_score(y, y_pred)
-    
-    fig_trend = go.Figure()
-    fig_trend.add_trace(go.Scatter(x=yearly['Year'], y=yearly['AverageTemperature'],
-                                   mode='markers', name='Avg Temperature', opacity=0.7))
-    fig_trend.add_trace(go.Scatter(x=yearly['Year'], y=y_pred, mode='lines', name=f'Trend (R² = {r2:.2f})', line=dict(color='red')))
-    fig_trend.update_layout(title="Annual Average Temperature Trend", xaxis_title="Year", yaxis_title="Temperature (°C)")
-    st.plotly_chart(fig_trend, use_container_width=True)
-
-    # --- КЛАСТЕРИЗАЦИЯ ГОРОДОВ ---
-    st.subheader("📍 City Clustering by Climate")
-    city_avg = filtered_df.groupby(['City', 'Country', 'Latitude', 'Longitude'])['AverageTemperature'].mean().reset_index()
-    
-    if len(city_avg) >= 3:
-        # Стандартизация и кластеризация
-        features = city_avg[['Latitude', 'Longitude', 'AverageTemperature']]
-        scaler = StandardScaler()
-        features_scaled = scaler.fit_transform(features)
-        kmeans = KMeans(n_clusters=min(5, len(city_avg)), random_state=42)
-        city_avg['Cluster'] = kmeans.fit_predict(features_scaled)
-        
-        # Визуализация
-        fig_clusters = px.scatter_mapbox(
-            city_avg,
-            lat='Latitude',
-            lon='Longitude',
-            color='Cluster',
-            size='AverageTemperature',
-            hover_name='City',
-            hover_data=['Country', 'AverageTemperature'],
-            zoom=1,
-            title="City Clusters by Avg Temperature & Location"
+    # Таблица
+    html.Div([
+        dash_table.DataTable(
+            id='data-table',
+            columns=[
+                {"name": "Тип", "id": "Тип"},
+                {"name": "Год", "id": "Год"},
+                {"name": "Страна", "id": "Страна"},
+                {"name": "Полушарие", "id": "Полушарие"},
+                {"name": "Средняя температура", "id": "СредняяТемпература"}
+            ],
+            page_size=10,
+            sort_action='native',
+            filter_action='native',
+            style_table={'overflowX': 'auto'},
+            style_cell={'textAlign': 'left', 'padding': '5px'}
         )
-        fig_clusters.update_layout(mapbox_style="open-street-map", height=500)
-        st.plotly_chart(fig_clusters, use_container_width=True)
+    ], className="mb-4"),
 
-        # --- KPI по кластерам ---
-        st.subheader("📊 Cluster Insights")
-        cluster_stats = city_avg.groupby('Cluster')['AverageTemperature'].agg(['mean', 'count']).round(2)
-        st.dataframe(cluster_stats.rename(columns={'mean': 'Avg Temp', 'count': 'Cities'}), use_container_width=True)
-        
-        # Интерпретация
-        hottest_cluster = cluster_stats['mean'].idxmax()
-        hottest_temp = cluster_stats.loc[hottest_cluster, 'mean']
-        st.info(f"🔥 Cluster {hottest_cluster} is the warmest (avg {hottest_temp}°C).")
+    # Графики
+    html.Div([
+        html.Div(dcc.Graph(id='hist-plot'), className="col-md-6"),
+        html.Div(dcc.Graph(id='box-plot'), className="col-md-6"),
+    ], className="row mb-4"),
 
-    # --- Feature Importance (условная) ---
-    st.subheader("🔍 Feature Influence on Temperature")
-    corr_temp = filtered_df[['AverageTemperature', 'Latitude', 'Longitude', 'Year']].corr()['AverageTemperature'].drop('AverageTemperature')
-    fig_imp = px.bar(x=corr_temp.index, y=corr_temp.values, title="Correlation with Temperature")
-    fig_imp.update_layout(yaxis_title="Correlation Coefficient")
-    st.plotly_chart(fig_imp, use_container_width=True)
+    html.Div(dcc.Graph(id='scatter-plot'), className="mb-4"),
+])
 
-# ========== FOOTER ==========
-st.sidebar.markdown("---")
-st.sidebar.write("💡 **Instructions to Run**:")
-st.sidebar.code("pip install streamlit pandas plotly scikit-learn\nstreamlit run app.py")
-st.sidebar.write("🌐 **Deploy**: Push to GitHub & deploy on [Streamlit Cloud](https://streamlit.io/cloud)")
+# Страница 2: Анализ
+analysis_layout = html.Div([
+    html.H2("🔍 Analysis Results", className="text-center mb-4"),
+    html.Div([
+        html.Div([
+            html.Label("Выбор модели:", className="form-label"),
+            dcc.RadioItems(
+                id='model-selector',
+                options=[
+                    {'label': 'Глобальный тренд', 'value': 'trend'},
+                    {'label': 'Сравнение полушарий', 'value': 'hemisphere'}
+                ],
+                value='trend',
+                labelStyle={'display': 'block'}
+            )
+        ], className="col-md-3"),
+        html.Div(id='metrics-cards', className="col-md-9")
+    ], className="row mb-4"),
+    html.Div(dcc.Graph(id='analysis-graph'), className="mb-4"),
+    html.Div(id='insights-text', className="alert alert-info")
+])
+
+# ======================
+# CALLBACKS
+# ======================
+
+@app.callback(Output('page-content', 'children'), Input('url', 'pathname'))
+def display_page(pathname):
+    if pathname == '/analysis':
+        return analysis_layout
+    return raw_layout
+
+@app.callback(
+    Output('data-table', 'data'),
+    Output('kpi-cards', 'children'),
+    Output('hist-plot', 'figure'),
+    Output('box-plot', 'figure'),
+    Output('scatter-plot', 'figure'),
+    Input('country-filter', 'value'),
+    Input('year-slider', 'value')
+)
+def update_raw_data(country, year_range):
+    # Объединяем данные
+    dff = pd.concat([df_global, df_countries, df_hemi], ignore_index=True)
+    dff = dff[(dff['Год'] >= year_range[0]) & (dff['Год'] <= year_range[1])]
+    if country != 'All':
+        dff = dff[dff['Страна'] == country]
+    dff = dff.dropna(subset=['СредняяТемпература'])
+
+    # KPI
+    kpi_cards = [
+        html.Div(html.Div([
+            html.H5("Записей", className="card-title"),
+            html.H4(f"{len(dff):,}", className="card-text")
+        ], className="card-body"), className="col-md-3")
+    ]
+    if len(dff) > 0:
+        kpi_cards.append(
+            html.Div(html.Div([
+                html.H5("Ср. температура", className="card-title"),
+                html.H4(f"{dff['СредняяТемпература'].mean():.2f}°C", className="card-text")
+            ], className="card-body"), className="col-md-3")
+        )
+
+    # Таблица
+    table_cols = ['Тип', 'Год', 'Страна', 'Полушарие', 'СредняяТемпература']
+    table_data = dff[table_cols].dropna(how='all').fillna('').head(50).to_dict('records')
+
+    # Гистограмма
+    hist = px.histogram(dff, x='СредняяТемпература', nbins=20, title="Распределение температур")
+
+    # Box-plot
+    box = px.box(dff, y='СредняяТемпература', title="Разброс температур")
+
+    # Scatter
+    scatter = px.scatter(
+        dff, x='Год', y='СредняяТемпература',
+        color='Тип', hover_data=['Страна', 'Полушарие'],
+        title="Температура по годам"
+    )
+
+    return table_data, kpi_cards, hist, box, scatter
+
+@app.callback(
+    Output('analysis-graph', 'figure'),
+    Output('metrics-cards', 'children'),
+    Output('insights-text', 'children'),
+    Input('model-selector', 'value')
+)
+def update_analysis(model):
+    if model == 'hemisphere' and not df_hemi.empty:
+        fig = px.line(
+            df_hemi,
+            x='Год',
+            y='СредняяТемпература',
+            color='Полушарие',
+            title="Сравнение температур: Северное vs Южное полушарие"
+        )
+        insights = "Северное полушарие нагревается быстрее из-за большей концентрации суши и промышленности."
+        metrics = []
+    else:
+        fig = px.line(
+            df_global,
+            x='Год',
+            y='СредняяТемпература',
+            title="Глобальный тренд средней температуры (1850–2013)"
+        )
+        if len(df_global) > 5:
+            fig.add_scatter(
+                x=df_global['Год'],
+                y=df_global['СредняяТемпература'].rolling(window=10, min_periods=1).mean(),
+                mode='lines',
+                name='10-летнее скользящее среднее'
+            )
+        insights = "Средняя глобальная температура выросла более чем на 1°C с середины XIX века."
+        metrics = []
+
+    return fig, metrics, insights
+
+# ======================
+# ЗАПУСК
+# ======================
+if __name__ == '__main__':
+    app.run_server(debug=True)
