@@ -15,7 +15,7 @@ import io
 # ЗАГРУЗКА И ПОДГОТОВКА ДАННЫХ
 # ======================
 try:
-    df = pd.read_csv('GlobalTemperatures_Optimized_Half2.csv')
+    df = pd.read_csv('GlobalTemperatures_Optimized_Half2_fixed.csv')
     df_clean = df.copy()
     
     # Обработка данных как в ноутбуке
